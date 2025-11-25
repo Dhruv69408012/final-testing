@@ -25,10 +25,11 @@ async def model(data: dict) -> dict:
     """
     Call external model and merge model output with original PR data.
     """
-    async with httpx.AsyncClient() as client:
-        response = await client.post("https://httpbin.org/post", json=data)
+    # async with httpx.AsyncClient() as client:
+    #     response = await client.post("https://httpbin.org/post", json=data)
 
-    received_json = response.json().get("json", {})
+    # received_json = response.json().get("json", {})
+    received_json = {}  # Mocked model output for demonstration
 
     # Choose processor based on type of PR
     if "pull_request" in data:  # GitHub webhook

@@ -6,81 +6,123 @@ import httpx
 import asyncio
 import json
 from sse_starlette.sse import EventSourceResponse
+import aiohttp
+import re
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
 
 app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 
-# In-memory PR list
-PR_STORE = {
-    "initial_prs": [],
-    "webhook_prs": []
-}
+PR_STORE = {"initial_prs": [], "webhook_prs": []}
+subscribers = []
 
-# -----------------------------
-#   CORE FUNCTIONS
-# -----------------------------
+LYZR_URL = os.getenv("LYZR_URL")
+LYZR_API_KEY = os.getenv("LYZR_API_KEY")
 
 
 async def model(data: dict) -> dict:
-    """
-    Call external model and merge model output with original PR data.
-    """
-    # async with httpx.AsyncClient() as client:
-    #     response = await client.post("https://httpbin.org/post", json=data)
+    patch_url = data.get("patch_url") or data.get("pull_request", {}).get("patch_url")
+    message = ""
 
-    # received_json = response.json().get("json", {})
-    received_json = {}  # Mocked model output for demonstration
+    if patch_url:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(patch_url, allow_redirects=True) as resp:
+                    resp.raise_for_status()
+                    patch_text = await resp.text()
+                    if patch_text:
+                        message = patch_text.strip().replace("\n", "\\n")
+        except Exception as e:
+            print("Error fetching patch:", e)
 
-    # Choose processor based on type of PR
-    if "pull_request" in data:  # GitHub webhook
-        return process_github_pr(received_json, data)
+    payload = {
+        "user_id": "d37028840@gmail.com",
+        "agent_id": "692592fdc69ec8d9a078471e",
+        "session_id": "692592fdc69ec8d9a078471e-b7v6b8jmjon",
+        "message": message
+    }
 
-    else:  # internal PR structure
-        return process_internal_pr(received_json, data)
+    headers = {"Content-Type": "application/json", "x-api-key": LYZR_API_KEY}
+    model_output = {}
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(LYZR_URL, json=payload, headers=headers) as resp:
+                resp.raise_for_status()
+                model_output = await resp.json()
+    except Exception as e:
+        print("Error calling Lyzr model:", e)
+
+    if "pull_request" in data:
+        return process_github_pr(model_output, data)
+    else:
+        return process_internal_pr(model_output, data)
+
 
 def process_github_pr(model_json: dict, original: dict) -> dict:
-    """
-    Process PRs coming from GitHub webhook structure.
-    """
     pr = original.get("pull_request", {})
-    print(pr.keys())
+    model_data = {}
+    if model_json.get("response"):
+        try:
+            clean_json_str = re.sub(r"^```json\s*|\s*```$", "", model_json["response"].strip(), flags=re.MULTILINE)
+            model_data = json.loads(clean_json_str)
+        except Exception as e:
+            print("Error parsing model response JSON:", e)
+            model_data = {}
 
-    return {
+    result = {
         "id": pr.get("id"),
         "title": pr.get("title"),
         "user": pr.get("user", {}).get("login"),
-
-        # model output fields
-        "status": model_json.get("status", "enhanced"),
-        "processed_at": model_json.get("processed_at", "server"),
+        "status": "enhanced",
+        "processed_at": "server",
     }
+
+    if model_data:
+        result.update({
+            "security": model_data.get("security"),
+            "readability": model_data.get("readability"),
+            "logic": model_data.get("logic"),
+            "performance": model_data.get("performance"),
+        })
+
+    return result
+
 
 def process_internal_pr(model_json: dict, original: dict) -> dict:
-    """
-    Process PRs coming from internal DB / manually created objects.
-    """
-    return {
+    model_data = {}
+    if model_json.get("response"):
+        try:
+            model_data = json.loads(model_json["response"])
+        except Exception as e:
+            print("Error parsing model response JSON:", e)
+            model_data = {}
+
+    result = {
         "id": original.get("id"),
         "title": original.get("title"),
-        "user": original.get("user").get("login"),
-
-        # model output fields
-        "status": model_json.get("status", "enhanced"),
-        "processed_at": model_json.get("processed_at", "server"),
+        "user": original.get("user", {}).get("login"),
+        "status": "enhanced",
+        "processed_at": "server",
     }
 
+    if model_data:
+        result.update({
+            "security": model_data.get("security"),
+            "readability": model_data.get("readability"),
+            "logic": model_data.get("logic"),
+            "performance": model_data.get("performance"),
+        })
 
-# -----------------------------
-#   SSE STREAM
-# -----------------------------
-subscribers = []
+    return result
 
 
 async def event_stream():
-    """Generator for SSE stream updates."""
     queue = asyncio.Queue()
     subscribers.append(queue)
-
     try:
         while True:
             data = await queue.get()
@@ -90,7 +132,6 @@ async def event_stream():
 
 
 def broadcast(data):
-    """Send data to all subscribers."""
     for q in subscribers:
         q.put_nowait(data)
 
@@ -100,56 +141,28 @@ async def stream():
     return EventSourceResponse(event_stream())
 
 
-# -----------------------------
-#   ENDPOINTS
-# -----------------------------
-
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse(
         "index.html",
-        {
-            "request": request,
-            "initial_prs": PR_STORE["initial_prs"],
-            "webhook_prs": PR_STORE["webhook_prs"],
-        },
+        {"request": request, "initial_prs": PR_STORE["initial_prs"], "webhook_prs": PR_STORE["webhook_prs"]},
     )
 
 
 @app.get("/prs")
 async def load_prs():
-    """
-    Load PRs from GitHub API.
-    Process each PR using the model() function
-    so that initial PRs and webhook PRs share the same structure.
-    """
     url = "https://api.github.com/repos/DhruvVayugundla/testing/pulls"
-
     async with httpx.AsyncClient() as client:
         res = await client.get(url)
-
     raw_prs = res.json()
-
-    processed = []
-    for pr in raw_prs:
-        normalized = await model(pr)   # <--- replace process_json()
-        processed.append(normalized)
-
+    processed = [await model(pr) for pr in raw_prs]
     PR_STORE["initial_prs"] = processed
     return {"count": len(processed), "prs": processed}
 
 
 @app.post("/webhook")
 async def webhook(payload: dict):
-    """
-    Receive incoming JSON.
-    Pass it through model().
-    Store in webhook PRs.
-    Then broadcast update to HTML via SSE.
-    """
-    processed = await model(payload)  # <--- replace process_json()
-
+    processed = await model(payload)
     PR_STORE["webhook_prs"].append(processed)
     broadcast({"webhook_prs": PR_STORE["webhook_prs"]})
-
     return {"status": "received", "processed": processed}

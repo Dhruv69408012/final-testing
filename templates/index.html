@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>PR Dashboard</title>
+    <style>
+      body {
+        font-family: Arial;
+        padding: 20px;
+      }
+      .column {
+        float: left;
+        width: 45%;
+        margin-right: 5%;
+      }
+      h2 {
+        border-bottom: 1px solid #ccc;
+      }
+      .pr-box {
+        padding: 10px;
+        border: 1px solid #ddd;
+        margin-bottom: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>PR Dashboard</h1>
+
+    <div class="column">
+      <h2>Existing PRs</h2>
+      <div id="initial_prs">
+        {% for pr in initial_prs %}
+        <div class="pr-box">
+          <b>ID:</b> {{ pr.id }} <br />
+          <b>Title:</b> {{ pr.title }} <br />
+          <b>User:</b> {{ pr.user }} <br />
+          <b>Status:</b> {{ pr.status }} <br />
+          <b>Processed at:</b> {{ pr.processed_at }}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div class="column">
+      <h2>Webhook PRs</h2>
+      <div id="webhook_prs">
+        {% for pr in webhook_prs %}
+        <div class="pr-box">
+          <b>ID:</b> {{ pr.id }} <br />
+          <b>Title:</b> {{ pr.title }} <br />
+          <b>User:</b> {{ pr.user }} <br />
+          <b>Status:</b> {{ pr.status }} <br />
+          <b>Processed at:</b> {{ pr.processed_at }}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <script>
+      const webhookDiv = document.getElementById("webhook_prs");
+      const initialDiv = document.getElementById("initial_prs");
+
+      // ---- Load existing PRs ----
+      fetch("/prs")
+        .then((r) => r.json())
+        .then((data) => {
+          const prs = data.prs || [];
+          initialDiv.innerHTML = "";
+          prs.forEach((pr) => {
+            initialDiv.innerHTML += `
+          <div class="pr-box">
+            <b>ID:</b> ${pr.id}<br>
+            <b>Title:</b> ${pr.title}<br>
+            <b>User:</b> ${pr.user}<br>
+            <b>Status:</b> ${pr.status}<br>
+            <b>Processed at:</b> ${pr.processed_at}
+          </div>`;
+          });
+        });
+
+      // ---- Webhook PRs via SSE ----
+      const evtSource = new EventSource("/stream");
+
+      evtSource.addEventListener("update", function (event) {
+        const data = JSON.parse(event.data);
+        const list = data.webhook_prs || [];
+
+        webhookDiv.innerHTML = "";
+        list.forEach((pr) => {
+          webhookDiv.innerHTML += `
+        <div class="pr-box">
+          <b>ID:</b> ${pr.id}<br>
+          <b>Title:</b> ${pr.title}<br>
+          <b>User:</b> ${pr.user}<br>
+          <b>Status:</b> ${pr.status}<br>
+          <b>Processed at:</b> ${pr.processed_at}
+        </div>`;
+        });
+      });
+    </script>
+  </body>
+</html>
